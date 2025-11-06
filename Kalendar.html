@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LIONESS Auto Serwis – Kalendarz</title>
+<style>
+  body { margin:0; font-family:'Segoe UI', sans-serif; background:#0a1a33; color:#fff; display:flex; height:100vh; }
+  .hours, .calendar { flex:1; padding:20px; overflow-y:auto; }
+  .calendar { border-left:2px solid #162d5c; display:flex; flex-direction:column; }
+  h2 { text-align:center; color:#ffcc00; }
+  .calendar-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .calendar-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
+  .day { padding:10px; text-align:center; cursor:pointer; border-radius:8px; background:#162d5c; transition:0.3s; }
+  .day:hover, .day.selected { background:#ffcc00; color:#0a1a33; }
+  .hour-row { display:flex; align-items:flex-start; justify-content:space-between; background:#162d5c; border-radius:6px; margin-bottom:5px; padding:8px 10px; }
+  .hour-row.occupied { background:rgba(255,0,0,0.3); }
+  .hour-info { flex:1; padding-left:10px; font-size:14px; white-space:pre-line; }
+  .form-container { margin-top:20px; background:#162d5c; border-radius:10px; padding:15px; }
+  label { display:block; margin-top:5px; font-size:14px; }
+  input, textarea { width:100%; padding:5px; border:none; border-radius:5px; margin-top:3px; }
+  .btn { background:#ffcc00; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; color:#0a1a33; font-weight:bold; margin-top:10px; }
+  .btn:hover { background:#ffd633; }
+  .btn-small { padding:3px 8px; font-size:12px; margin-left:5px; }
+  .auth { margin-bottom:10px; }
+</style>
+</head>
+<body>
+
+<div class="hours">
+  <h2>Godziny</h2>
+  <div id="hoursContainer">Wybierz datę w kalendarzu</div>
+  <button class="btn" onclick="window.print()">🖨️ Drukuj całość</button>
+</div>
+
+<div class="calendar">
+  <h2>Kalendarz</h2>
+
+  <div class="auth">
+    <label>Email:</label><input id="email" placeholder="Twój email">
+    <label>Hasło:</label><input type="password" id="password" placeholder="Hasło">
+    <button class="btn" id="btnLogin">Zaloguj się</button>
+    <button class="btn" id="btnLogout" style="display:none">Wyloguj</button>
+    <div id="status" style="margin-top:5px; color:#9fb3c8;">Offline</div>
+  </div>
+
+  <div class="calendar-header">
+    <button id="prevMonth">◀</button>
+    <span id="monthYear"></span>
+    <button id="nextMonth">▶</button>
+  </div>
+  <div class="calendar-grid" id="calendarDays"></div>
+
+  <div class="form-container">
+    <h3>Dodaj klienta</h3>
+    <label>Godzina:</label><input type="number" id="hourSelect" min="0" max="23">
+    <label>Imię i nazwisko:</label><input id="clientName">
+    <label>Telefon:</label><input id="clientPhone">
+    <label>Nr rejestracyjny:</label><input id="clientCar">
+    <label>Adres:</label><input id="clientAddress">
+    <label>Notatki:</label><textarea id="clientNotes"></textarea>
+    <button class="btn" id="saveClient">ZAPISAĆ</button>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore.js";
+
+// --- Firebase config ---
+const firebaseConfig = {
+  apiKey: "AIzaSyC8XLtWDq5IkSDaA75meZLzJk7jOjm__jA",
+  authDomain: "kalendar-73af8.firebaseapp.com",
+  projectId: "kalendar-73af8",
+  storageBucket: "kalendar-73af8.firebasestorage.app",
+  messagingSenderId: "691157147315",
+  appId: "1:691157147315:web:3f8391032c777af3c05ac6",
+  measurementId: "G-R130F4MKJZ"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// UI refs
+const emailEl = document.getElementById('email');
+const passEl = document.getElementById('password');
+const btnLogin = document.getElementById('btnLogin');
+const btnLogout = document.getElementById('btnLogout');
+const statusEl = document.getElementById('status');
+
+const form = {
+  hour: document.getElementById('hourSelect'),
+  name: document.getElementById('clientName'),
+  phone: document.getElementById('clientPhone'),
+  car: document.getElementById('clientCar'),
+  address: document.getElementById('clientAddress'),
+  notes: document.getElementById('clientNotes'),
+  saveBtn: document.getElementById('saveClient')
+};
+
+const hoursContainer = document.getElementById('hoursContainer');
+const monthYear = document.getElementById('monthYear');
+const calendarDays = document.getElementById('calendarDays');
+
+let currentDate = new Date();
+let selectedDate = null;
+let currentUser = null;
+let unsubscribe = null;
+
+// --- Auth ---
+btnLogin.addEventListener('click', async () => {
+  const email = emailEl.value.trim();
+  const pass = passEl.value;
+  if(!email || !pass){ alert('Wpisz email i hasło'); return; }
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch(e) { alert('Błąd logowania: ' + e.message); }
+});
+
+btnLogout.addEventListener('click', ()=> signOut(auth));
+
+onAuthStateChanged(auth, user => {
+  if(user){
+    currentUser = user;
+    statusEl.textContent = 'Online: ' + user.email;
+    btnLogout.style.display = 'inline-block';
+    btnLogin.style.display = 'none';
+    emailEl.style.display = 'none';
+    passEl.style.display = 'none';
+    startRealtime();
+  } else {
+    currentUser = null;
+    statusEl.textContent = 'Offline';
+    btnLogout.style.display = 'none';
+    btnLogin.style.display = 'inline-block';
+    emailEl.style.display = 'inline-block';
+    passEl.style.display = 'inline-block';
+    if(unsubscribe) unsubscribe();
+    loadLocalAppointments();
+  }
+});
+
+// --- Calendar ---
+function formatDate(y,m,d){ return `${d.toString().padStart(2,'0')}.${(m+1).toString().padStart(2,'0')}.${y}`; }
+
+function renderCalendar(){
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const lastDate = new Date(year, month+1, 0).getDate();
+  monthYear.textContent = currentDate.toLocaleString('pl-PL',{month:'long',year:'numeric'});
+  calendarDays.innerHTML = '';
+  const offset = (firstDay+6)%7;
+  for(let i=0;i<offset;i++) calendarDays.appendChild(document.createElement('div'));
+  for(let day=1;day<=lastDate;day++){
+    const d = document.createElement('div');
+    d.classList.add('day');
+    d.textContent = day;
+    d.addEventListener('click',()=> selectDate(year,month,day,d));
+    calendarDays.appendChild(d);
+  }
+}
+
+function selectDate(y,m,d,el){
+  document.querySelectorAll('.day').forEach(x=>x.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedDate = `${y}-${m+1}-${d}`;
+  renderHours(y,m,d);
+}
+
+function renderHours(y,m,d){
+  if(!selectedDate) return;
+  const saved = getSaved(selectedDate);
+  hoursContainer.innerHTML = `<h3>${formatDate(y,m,d)}</h3>`;
+  for(let h=0;h<24;h++){
+    const row = document.createElement('div');
+    row.classList.add('hour-row');
+    const time = `${h.toString().padStart(2,'0')}:00`;
+    const info = document.createElement('div');
+    info.className='hour-info';
+    if(saved[h]){
+      const d = saved[h];
+      info.textContent=`${d.name}\n${d.phone}\n${d.car}\n${d.address}\n${d.notes}`;
+      row.classList.add('occupied');
+    }
+    const btns = document.createElement('div');
+    if(saved[h]){
+      const cancel = document.createElement('button');
+      cancel.textContent='❌ Anuluj';
+      cancel.className='btn-small';
+      cancel.onclick=()=>{ delete saved[h]; saveLocal(selectedDate,saved); renderHours(y,m,d); };
+      btns.appendChild(cancel);
+    }
+    row.append(document.createTextNode(time), info, btns);
+    hoursContainer.appendChild(row);
+  }
+}
+
+// --- Save appointment ---
+form.saveBtn.addEventListener('click', async ()=>{
+  if(!selectedDate) return alert('Najpierw wybierz datę!');
+  const hour = parseInt(form.hour.value);
+  if(isNaN(hour)||hour<0||hour>23) return alert('Nieprawidłowa godzina!');
+  const item = {
+    name: form.name.value,
+    phone: form.phone.value,
+    car: form.car.value,
+    address: form.address.value,
+    notes: form.notes.value,
+    ts: Date.now()
+  };
+  if(currentUser){
+    try{
+      const col = collection(db,'users',currentUser.uid,'appointments');
+      await addDoc(col,item);
+      clearForm();
+    }catch(e){ alert('Błąd zapisu: '+e.message); }
+  } else {
+    const saved = getSaved(selectedDate);
+    saved[hour]=item;
+    saveLocal(selectedDate,saved);
+    renderHours(...selectedDate.split('-').map(Number));
+    clearForm();
+  }
+});
+
+function clearForm(){
+  Object.values(form).forEach(f=>{ if(f.tagName==='INPUT'||f.tagName==='TEXTAREA') f.value=''; });
+}
+
+// --- LocalStorage ---
+function saveLocal(date,obj){ localStorage.setItem(date,JSON.stringify(obj)); }
+function getSaved(date){ return JSON.parse(localStorage.getItem(date)||'{}'); }
+function loadLocalAppointments(){ if(selectedDate) renderHours(...selectedDate.split('-').map(Number)); }
+
+// --- Realtime ---
+function startRealtime(){
+  if(!currentUser) return;
+  const colRef = collection(db,'users',currentUser.uid,'appointments');
+  const q = query(colRef,orderBy('ts','desc'));
+  unsubscribe = onSnapshot(q,snap=>{
+    const items = {};
+    snap.forEach(d=>items[new Date(d.data().ts).getHours()]=d.data());
+    saveLocal(selectedDate||'offline',items);
+    if(selectedDate) renderHours(...selectedDate.split('-').map(Number));
+  });
+}
+
+// --- Month navigation ---
+document.getElementById('prevMonth').addEventListener('click',()=>{ currentDate.setMonth(currentDate.getMonth()-1); renderCalendar(); });
+document.getElementById('nextMonth').addEventListener('click',()=>{ currentDate.setMonth(currentDate.getMonth()+1); renderCalendar(); });
+
+renderCalendar();
+</script>
+</body>
+</html>
